@@ -119,6 +119,10 @@ void onSent(const uint8_t *mac_addr, esp_now_send_status_t status) {
   Serial.print("ESP-NOW Status: ");
   Serial.println(status == ESP_NOW_SEND_SUCCESS ? "Terkirim" : "Gagal");
 }
+
+unsigned long berjalanStartTime = 0;
+const unsigned long waktuPengingat = 45UL * 60UL * 1000UL;
+bool sedangBerjalan = false;
  
 void setup() {
   Serial.begin(115200);

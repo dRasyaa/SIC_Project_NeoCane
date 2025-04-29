@@ -8,6 +8,8 @@ from datetime import datetime
 import os
 import shutil
 import requests
+import face_recognition
+import opencv as cv2
 
 latest_status = {"status": "unknown", "timestamp": "-", "image": None}
 
@@ -17,6 +19,23 @@ os.makedirs(PHOTO_FOLDER, exist_ok=True)
 
 # Inisialisasi Flask
 app = Flask(__name__)
+
+known_face_encodings = []
+known_face_names = []
+
+def load_known_faces():
+    images = {
+        "Rhaka": "Projek\Data_Photo\Rhaka.jpg",
+        "Bilal": "Projek\Data_Photo\Bilal.jpg", 
+    }
+    
+    for name, path in images.items():
+        image = face_recognition.load_image_file(path)
+        encoding = face_recognition.face_encodings(image)[0]
+        known_face_encodings.append(encoding)
+        known_face_names.append(name)
+
+load_known_faces()
 
 # Load TFLite model
 interpreter = tf.lite.Interpreter(model_path="Projek\model_jalan.tflite")
@@ -127,6 +146,36 @@ def save_photo():
 
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@app.route('/face-recognition', methods=['POST'])
+def recognize_face():
+    data = request.get_json()
+    if 'image' not in data:
+        return jsonify({"error": "No image provided"}), 400
+    
+    # Decode base64 image
+    image_data = base64.b64decode(data['image'])
+    np_arr = np.frombuffer(image_data, np.uint8)
+    img = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
+    
+    # Resize kecil kalau perlu supaya lebih cepat
+    small_img = cv2.resize(img, (0, 0), fx=0.5, fy=0.5)
+
+    # Deteksi wajah
+    face_locations = face_recognition.face_locations(small_img)
+    face_encodings = face_recognition.face_encodings(small_img, face_locations)
+
+    for face_encoding in face_encodings:
+        matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+        face_distances = face_recognition.face_distance(known_face_encodings, face_encoding)
+        
+        best_match_index = np.argmin(face_distances)
+        if matches[best_match_index]:
+            name = known_face_names[best_match_index]
+            return jsonify({"status": "keluarga", "nama": name})
+
+    # Kalau tidak ada wajah dikenali
+    return jsonify({"status": "unknown"})
 
 if __name__ == '__main__':
     app.run(host='0.0.0.0', port=5500)

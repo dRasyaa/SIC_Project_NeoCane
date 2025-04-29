@@ -1,8 +1,19 @@
 import streamlit as st
+import pandas as pd
+import pydeck as pdk
 import requests
 import time
 import os
 from PIL import Image
+from sklearn.cluster import DBSCAN
+import numpy as np
+ 
+st.set_page_config(
+    page_title="NeoCane Dashboard",     
+    page_icon="🦯",                       
+    layout="wide",                        
+    initial_sidebar_state="auto",         
+)
  
 # Konfigurasi Ubidots
 TOKEN = "BBUS-dUnnmdDGegd40VNGBKuCOnpvAbO9eJ"
@@ -15,27 +26,38 @@ def load_sensor_value(token):
     url4 = f"https://industrial.api.ubidots.com/api/v1.6/devices/{LABEL}/jarak_kiri/lv"
     url5 = f"https://industrial.api.ubidots.com/api/v1.6/devices/{LABEL}/jarak_tengah/lv"
     url6 = f"https://industrial.api.ubidots.com/api/v1.6/devices/{LABEL}/ai_vision/lv"
+    url8 = f"https://industrial.api.ubidots.com/api/v1.6/devices/{LABEL}/longitude/lv"
+    url9 = f"https://industrial.api.ubidots.com/api/v1.6/devices/{LABEL}/latitude/lv"
  
     try:
         response_jarak_kanan = requests.get(url3, headers=my_headers)
         response_jarak_kiri = requests.get(url4, headers=my_headers)
         response_jarak_tengah = requests.get(url5, headers=my_headers)
         response_ai_vision = requests.get(url6, headers=my_headers)
+        response_longitude = requests.get(url8, headers=my_headers)
+        response_latitude = requests.get(url9, headers=my_headers)  
  
+        response_jarak_kanan.raise_for_status()
         response_jarak_kiri.raise_for_status()
         response_jarak_tengah.raise_for_status()
         response_ai_vision.raise_for_status()
+        response_longitude.raise_for_status()
+        response_latitude.raise_for_status()
  
         jarak_kanan = float(response_jarak_kanan.text)
         jarak_tengah = float(response_jarak_tengah.text)
         jarak_kiri = float(response_jarak_kiri.text)
         ai_vision = int(float(response_ai_vision.text))
+        longitude = float(response_longitude.text)
+        latitude = float(response_latitude.text)
  
         return {
             "jarak_kanan": jarak_kanan,
             "jarak_tengah": jarak_tengah,
             "jarak_kiri": jarak_kiri,
-            "ai_vision": ai_vision
+            "ai_vision": ai_vision,
+            "longitude": longitude,
+            "latitude" : latitude
         }
     except Exception as e:
         st.error(f"Failed to collect the data: {e}")
@@ -44,15 +66,7 @@ def load_sensor_value(token):
 # Inisialisasi session_state buat sensor values
 if "sensor_values" not in st.session_state:
     st.session_state.sensor_values = load_sensor_value(TOKEN)
-
-st.set_page_config(
-    page_title="NeoCane Dashboard",     
-    page_icon="🦯",                       
-    layout="wide",                        
-    initial_sidebar_state="auto",         
-)
-
-
+ 
 # Sidebar Menu
 st.sidebar.title("📂 NeoCane Menu")
 menu = st.sidebar.radio("Select View:", ["🏠 Home", "📊 Data", "ℹ️ About NeoCane", "👉 About Us"])
@@ -199,14 +213,14 @@ if menu == "🏠 Home":
         if st.button("GPS Tracker"):
             st.session_state.show_gps = not st.session_state.show_gps
         if st.session_state.show_gps:
-            st.info("(COMING SOON) This feature allows real-time tracking of the user's location, providing safety and security.")
+            st.info("This feature allows real-time tracking of the user's location, providing safety and security.")
  
     # EB
     with col5:
         if st.button("Emergency Button"):
             st.session_state.show_sos = not st.session_state.show_sos
         if st.session_state.show_sos:
-            st.info("(COMING SOON) Button that sends an alert to caregivers or monitoring systems in case of emergencies.")
+            st.info("Button that sends an alert to caregivers or monitoring systems in case of emergencies.")
  
     # WB
     with col6:
@@ -308,8 +322,106 @@ elif menu == "📊 Data":
  
         # Fitur GPS (Coming Soon)
         with tab4:
-            st.subheader("🗺 GPS Tracking")
-            st.markdown("GPS tracking feature is coming soon! Stay tuned for updates.")
+            st.subheader("🗺 GPS Tracking & Frequent Locations")
+ 
+            # Refresh Button
+            if st.button("📍 Refresh GPS Data"):
+                st.session_state.sensor_values = load_sensor_value(TOKEN)
+                sensor_values = st.session_state.sensor_values
+ 
+            # Current Location
+            latitude = sensor_values["latitude"]
+            longitude = sensor_values["longitude"]
+            st.write(f"**Current Location:** ({latitude}, {longitude})")
+ 
+            # Peta Real-Time
+            st.markdown("### 🌍 Live Location")
+            st.map(pd.DataFrame({'lat': [latitude], 'lon': [longitude]}))
+ 
+            # Analisis Tempat Favorit
+            st.markdown("### ⭐ Frequently Visited Places")
+ 
+            # Simpan riwayat GPS ke session_state
+            if "gps_history" not in st.session_state:
+                st.session_state.gps_history = []
+ 
+            # Tambahkan lokasi baru ke history 
+            new_location = (latitude, longitude)
+            if len(st.session_state.gps_history) == 0 or new_location != st.session_state.gps_history[-1]:
+                st.session_state.gps_history.append(new_location)
+ 
+            # Deteksi tempat favorit (jika ada minimal 5 data)
+            if len(st.session_state.gps_history) > 5:
+ 
+ 
+                # Konversi ke numpy array
+                coords = np.array(st.session_state.gps_history)
+ 
+                # Clustering dengan DBSCAN 
+                kms_per_radian = 6371.0088
+                epsilon = 0.05 / kms_per_radian  
+ 
+                db = DBSCAN(
+                    eps=epsilon, 
+                    min_samples=3,  
+                    metric='haversine'
+                ).fit(np.radians(coords))
+ 
+                # Hitung frekuensi kunjungan per cluster
+                clusters = pd.Series(db.labels_)
+                freq_spots = clusters.value_counts().reset_index()
+                freq_spots.columns = ['cluster_id', 'visit_count']
+ 
+                # Ambil centroid tiap cluster
+                freq_spots['lat'] = freq_spots['cluster_id'].apply(
+                    lambda x: coords[clusters == x][:, 0].mean()
+                )
+                freq_spots['lon'] = freq_spots['cluster_id'].apply(
+                    lambda x: coords[clusters == x][:, 1].mean()
+                )
+ 
+                # Filter cluster valid (bukan noise)
+                freq_spots = freq_spots[freq_spots['cluster_id'] != -1]
+ 
+                # Tampilkan hasil
+                if not freq_spots.empty:
+                    st.success(f"Found {len(freq_spots)} frequent locations!")
+ 
+                    # Tabel ranking
+                    st.dataframe(
+                        freq_spots.sort_values('visit_count', ascending=False)
+                        .reset_index(drop=True)
+                        .style.background_gradient(cmap='YlOrRd'),
+                        column_config={
+                            "lat": "Latitude",
+                            "lon": "Longitude",
+                            "visit_count": "Total Visits"
+                        }
+                    )
+ 
+                    # Peta heatmap
+                    st.pydeck_chart(pdk.Deck(
+                        map_style='mapbox://styles/mapbox/light-v9',
+                        initial_view_state=pdk.ViewState(
+                            latitude=latitude,
+                            longitude=longitude,
+                            zoom=13
+                        ),
+                        layers=[
+                            pdk.Layer(
+                                'HeatmapLayer',
+                                data=freq_spots,
+                                get_position=['lon', 'lat'],
+                                get_weight='visit_count',
+                                radius=100,
+                                intensity=1
+                            )
+                        ]
+                    ))
+                else:
+                    st.warning("No frequent locations detected yet.")
+            else:
+                st.info("Collecting more location data... (min 5 points  needed)")
  
         # Fitur Emergency Button (Coming Soon)
         with tab5:
