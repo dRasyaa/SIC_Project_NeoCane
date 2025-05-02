@@ -47,11 +47,11 @@ bool sensorAktif = true;
 unsigned long lastSendTime = 0;
 const unsigned long sendInterval = 2000;
 unsigned long lastControlCheck = 0;
-const unsigned long controlCheckInterval = 3000;
+const unsigned long controlCheckInterval = 2000;
 unsigned long lastSensorRead = 0;
-unsigned long sensorInterval = 500;
+unsigned long sensorInterval = 1000;
 unsigned long lastUbidotsSend = 0;
-unsigned long ubidotsInterval = 5000;
+unsigned long ubidotsInterval = 2000;
 
 // Jarak Sensor
 float depan = -1, kiri = -1, kanan = -1;
@@ -435,4 +435,26 @@ void loop() {
     lcd.setCursor(0, 0);
     lcd.print("Sensor: NON-AKTIF");
   }
+}
+
+void sendToUbidots(double latitude, double longitude) {
+  // Kirim data GPS ke Ubidots dalam format position
+  HTTPClient http;
+  String url = "http://industrial.api.ubidots.com/api/v1.6/devices/neocane-dashboard/position/";
+
+  http.begin(url);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-Auth-Token", ubidotsToken);
+
+  String payload = "{\"value\": 1, \"context\": {\"lat\": " + String(latitude, 6) + ", \"lng\": " + String(longitude, 6) + "}}";
+
+  int httpResponseCode = http.POST(payload);
+
+  if (httpResponseCode > 0) {
+    Serial.println("Data GPS berhasil dikirim ke Ubidots!");
+  } else {
+    Serial.println("Gagal mengirim data GPS ke Ubidots");
+  }
+
+  http.end();
 }
