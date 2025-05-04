@@ -19,13 +19,9 @@ LiquidCrystal_I2C lcd(0x27, 20, 4);
 // WiFi dan Server
 const char* ssid = "Balai Diklat 2025";
 const char* password = "denivorasya";
-const char* serverURL = "http://172.16.1.71:5500/distance";
-const char* ubidotsToken = "BBUS-dUnnmdDGegd40VNGBKuCOnpvAbO9eJ"; 
-const char* ubidotsDeviceLabel = "neocane-dashboard"; 
-const char* ubidotsURL = "https://industrial.api.ubidots.com/api/v1.6/devices/"; 
+const char* serverURL = "http://172.16.1.71:5500/distance"; // Server Flask URL
 const char* openCageApiKey = "ISI_API_KEY_OPENCAGE_KAMU"; // <-- Ganti API key kamu
 String lastLocationName = "Unknown";
-
 
 // ESP-NOW
 uint8_t receiverAddress[] = {0xF8, 0xB3, 0xB7, 0x7B, 0xDD, 0xD8};
@@ -50,8 +46,6 @@ unsigned long lastControlCheck = 0;
 const unsigned long controlCheckInterval = 2000;
 unsigned long lastSensorRead = 0;
 unsigned long sensorInterval = 1000;
-unsigned long lastUbidotsSend = 0;
-unsigned long ubidotsInterval = 2000;
 
 // Jarak Sensor
 float depan = -1, kiri = -1, kanan = -1;
@@ -98,13 +92,12 @@ float readDistance(int trigPin, int echoPin) {
 void checkSensorControl() {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
-    String url = String(ubidotsURL) + ubidotsDeviceLabel + "/sensor_control/lv";
+    String url = "http://172.16.1.71:5500/sensor_control"; // Flask control endpoint
 
     Serial.println("[Control] Request to: " + url);
 
     http.setTimeout(2000);
     http.begin(url);
-    http.addHeader("X-Auth-Token", ubidotsToken);
 
     int httpCode = http.GET();
     if (httpCode > 0) {
@@ -124,18 +117,21 @@ void checkSensorControl() {
 }
 
 // -------------------------
-// Fungsi Kirim ke Server Lokal
-void sendToServer(float depan, float kiri, float kanan) {
+// Fungsi Kirim ke Server Lokal (Flask)
+void sendToServer(float depan, float kiri, float kanan, double latitude, double longitude) {
   if (WiFi.status() == WL_CONNECTED) {
     HTTPClient http;
     http.setTimeout(2000);
     http.begin(serverURL);
     http.addHeader("Content-Type", "application/json");
 
+    // Mengirim data sensor + GPS
     String jsonPayload = "{";
     jsonPayload += "\"front\": " + String(depan, 2) + ",";
     jsonPayload += "\"left\": " + String(kiri, 2) + ",";
-    jsonPayload += "\"right\": " + String(kanan, 2);
+    jsonPayload += "\"right\": " + String(kanan, 2) + ",";
+    jsonPayload += "\"latitude\": " + String(latitude, 6) + ",";
+    jsonPayload += "\"longitude\": " + String(longitude, 6);
     jsonPayload += "}";
 
     int httpResponseCode = http.POST(jsonPayload);
@@ -147,47 +143,6 @@ void sendToServer(float depan, float kiri, float kanan) {
     http.end();
   } else {
     Serial.println("WiFi not connected");
-  }
-}
-
-// -------------------------
-// Fungsi Kirim ke Ubidots
-void sendToUbidots(float depan, float kiri, float kanan) {
-  if (WiFi.status() == WL_CONNECTED) {
-    HTTPClient http;
-    String fullURL = String(ubidotsURL) + ubidotsDeviceLabel;
-    http.setTimeout(2000);
-    http.begin(fullURL);
-    http.addHeader("Content-Type", "application/json");
-    http.addHeader("X-Auth-Token", ubidotsToken);
-
-    String jsonPayload = "{";
-    jsonPayload += "\"jarak_tengah\": " + String(depan, 2) + ",";
-    jsonPayload += "\"jarak_kiri\": " + String(kiri, 2) + ",";
-    jsonPayload += "\"jarak_kanan\": " + String(kanan, 2);
-
-    if (gpsConnected) {
-      jsonPayload += ",";
-      jsonPayload += "\"latitude\": " + String(gps.location.lat(), 6) + ",";
-      jsonPayload += "\"longitude\": " + String(gps.location.lng(), 6) + ",";
-      jsonPayload += "\"lokasi\": \"" + lastLocationName + "\"";
-    }
-
-    jsonPayload += "}";
-
-    Serial.println("[Ubidots] Kirim: " + jsonPayload);
-
-    int httpResponseCode = http.POST(jsonPayload);
-
-    if (httpResponseCode > 0) {
-      Serial.println("[Ubidots] OK: " + String(httpResponseCode));
-    } else {
-      Serial.println("[Ubidots] Gagal, Error: " + String(httpResponseCode));
-    }
-
-    http.end();
-  } else {
-    Serial.println("[Ubidots] WiFi belum nyambung");
   }
 }
 
@@ -303,7 +258,6 @@ double haversine(double lat1, double lon1, double lat2, double lon2) {
   return R * c;
 }
 
-
 // -------------------------
 // Loop
 void loop() {
@@ -330,6 +284,9 @@ void loop() {
 
     updateLocationName(gps.location.lat(), gps.location.lng());
 
+    // Kirim data sensor + GPS ke server
+    sendToServer(depan, kiri, kanan, gps.location.lat(), gps.location.lng());
+
   } else {
     if (gpsConnected) {
       Serial.println("GPS kehilangan sinyal...");
@@ -339,52 +296,7 @@ void loop() {
     }
   }
 
-  // --------------------------
-  // Tambahan: Tracking Waktu Jalan
-  if (gpsConnected) {
-    double lat = gps.location.lat();
-    double lon = gps.location.lng();
-
-    double jarak = haversine(lastLat, lastLon, lat, lon);
-    Serial.println("[Tracking] Jarak dari lastPos: " + String(jarak) + " meter");
-
-    if (jarak > 2.0) { // Bergerak lebih dari 2 meter
-      if (!sedangBerjalan) {
-        sedangBerjalan = true;
-        mulaiJalanMillis = now;
-        waktuBerjalan = 0;
-        Serial.println("[Tracking] Mulai jalan!");
-      }
-      if (timerPaused) {
-        // Lanjutkan waktu berjalan
-        mulaiJalanMillis += (now - waktuBerhentiMillis);
-        timerPaused = false;
-        Serial.println("[Tracking] Lanjut jalan!");
-      }
-    } else {
-      if (sedangBerjalan && !timerPaused) {
-        waktuBerhentiMillis = now;
-        timerPaused = true;
-        Serial.println("[Tracking] Berhenti jalan sementara.");
-      }
-    }
-
-    lastLat = lat;
-    lastLon = lon;
-
-    if (sedangBerjalan && !timerPaused) {
-      waktuBerjalan = now - mulaiJalanMillis;
-      Serial.println("[Tracking] Waktu berjalan (ms): " + String(waktuBerjalan));
-      
-      if (waktuBerjalan >= 2700000UL) { // 45 menit = 2.700.000 ms
-        Serial.println("[Tracking] Sudah berjalan 45 menit! 🎉");
-        // Kamu bisa tambahkan aksi lain di sini misalnya kirim ke server
-      }
-    }
-  }
-  // --------------------------
-
-  // Cek kontrol sensor dari Ubidots
+  // Cek kontrol sensor dari Flask
   if (now - lastControlCheck >= controlCheckInterval) {
     checkSensorControl();
     lastControlCheck = now;
@@ -422,39 +334,18 @@ void loop() {
 
       esp_now_send(receiverAddress, (uint8_t *)&dataSensor, sizeof(dataSensor));
 
+      sendToServer(depan, kiri, kanan);
+
       lastSensorRead = now;
     }
+  }
 
-    if (now - lastUbidotsSend >= ubidotsInterval) {
-      sendToServer(depan, kiri, kanan);
-      sendToUbidots(depan, kiri, kanan);
-      lastUbidotsSend = now;
+  // Jika terlalu lama diam, pause timer
+  if (sedangBerjalan && !timerPaused) {
+    if (now - mulaiJalanMillis >= 5000) {
+      timerPaused = true;
+      waktuBerjalan = now - mulaiJalanMillis;
+      Serial.print("Timer jalan: "); Serial.println(waktuBerjalan);
     }
-  } else {
-    lcd.clear();
-    lcd.setCursor(0, 0);
-    lcd.print("Sensor: NON-AKTIF");
   }
-}
-
-void sendToUbidots(double latitude, double longitude) {
-  // Kirim data GPS ke Ubidots dalam format position
-  HTTPClient http;
-  String url = "http://industrial.api.ubidots.com/api/v1.6/devices/neocane-dashboard/position/";
-
-  http.begin(url);
-  http.addHeader("Content-Type", "application/json");
-  http.addHeader("X-Auth-Token", ubidotsToken);
-
-  String payload = "{\"value\": 1, \"context\": {\"lat\": " + String(latitude, 6) + ", \"lng\": " + String(longitude, 6) + "}}";
-
-  int httpResponseCode = http.POST(payload);
-
-  if (httpResponseCode > 0) {
-    Serial.println("Data GPS berhasil dikirim ke Ubidots!");
-  } else {
-    Serial.println("Gagal mengirim data GPS ke Ubidots");
-  }
-
-  http.end();
 }
